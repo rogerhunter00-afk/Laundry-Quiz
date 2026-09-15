@@ -1,5 +1,5 @@
-const WLLAMA_ESM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/+esm';
-const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/src/wasm/wllama.wasm';
+const WLLAMA_ESM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.js';
+const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm';
 
 const CPU_MODEL = {
   repo: 'tensorblock/SmolLM2-360M-Instruct-GGUF',
@@ -18,7 +18,14 @@ export function cpuModelInfo() {
 export async function loadCPUModel(onProgress = () => {}) {
   if (loaded && instance) return instance;
 
-  const { Wllama, LoggerWithoutDebug } = await import(WLLAMA_ESM);
+  let runtime;
+  try {
+    runtime = await import(WLLAMA_ESM);
+  } catch (error) {
+    throw new Error(`Could not load the CPU AI runtime. ${error?.message || error}`);
+  }
+
+  const { Wllama, LoggerWithoutDebug } = runtime;
   if (!instance) {
     instance = new Wllama(
       { default: WLLAMA_WASM },
