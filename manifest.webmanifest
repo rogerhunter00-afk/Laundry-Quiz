@@ -1,0 +1,14 @@
+{
+  "name": "Zelda Guide AI",
+  "short_name": "Zelda AI",
+  "description": "Offline, on-device Zelda guide assistant.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#07110d",
+  "theme_color": "#0f2f22",
+  "orientation": "portrait-primary",
+  "icons": [
+    {"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
