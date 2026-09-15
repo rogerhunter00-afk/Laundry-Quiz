@@ -1,5 +1,5 @@
-const SHELL_CACHE = 'albw-shell-v5';
-const CDN_CACHE = 'albw-cdn-v5';
+const SHELL_CACHE = 'albw-shell-v6';
+const CDN_CACHE = 'albw-cdn-v6';
 const SHELL = ['./','./index.html','./app.js','./cpu-llm.js','./knowledge.js','./guide.html','./guide.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install', (event) => {
