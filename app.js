@@ -75,7 +75,7 @@ function retrieve(question, limit=5) {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[c]));
 }
 
 function addBubble(role, text, sources=[]) {
@@ -106,6 +106,15 @@ function updateConnection() {
   setPill(els.netPill, navigator.onLine ? 'Online' : 'Offline', navigator.onLine ? '' : 'warn');
 }
 
+function updateModelButtonFromSavedState() {
+  const ready = localStorage.getItem('albw-runtime-ready');
+  if (!hasWebGPU && ready === 'cpu') {
+    els.modelBtn.textContent = runtimeKind === 'cpu' ? 'CPU AI ready ✓' : 'CPU AI downloaded ✓';
+  } else if (hasWebGPU && ready === 'gpu') {
+    els.modelBtn.textContent = runtimeKind === 'gpu' ? 'GPU AI ready ✓' : 'GPU AI downloaded ✓';
+  }
+}
+
 async function checkGPU() {
   hasWebGPU = false;
   if ('gpu' in navigator) {
@@ -115,16 +124,18 @@ async function checkGPU() {
     } catch {}
   }
 
+  const ready = localStorage.getItem('albw-runtime-ready');
+
   if (hasWebGPU) {
-    setPill(els.gpuPill, 'GPU AI supported');
+    setPill(els.gpuPill, ready === 'gpu' ? 'GPU AI downloaded' : 'GPU AI supported');
     els.modelSelect.disabled = false;
-    els.modelBtn.textContent = 'Download AI for offline use';
+    els.modelBtn.textContent = ready === 'gpu' ? 'GPU AI downloaded ✓' : 'Download AI for offline use';
     return true;
   }
 
-  setPill(els.gpuPill, 'CPU AI available', 'warn');
+  setPill(els.gpuPill, ready === 'cpu' ? 'CPU AI downloaded' : 'CPU AI available', 'warn');
   els.modelSelect.disabled = true;
-  els.modelBtn.textContent = 'Download CPU AI (~271 MB)';
+  els.modelBtn.textContent = ready === 'cpu' ? 'CPU AI downloaded ✓' : 'Download CPU AI (~271 MB)';
   els.supportNote.textContent = 'WebGPU is unavailable on this phone, so the app will use SmolLM2 360M on the CPU through WebAssembly instead. It will be slower, but it still runs locally and works offline after the first download.';
   els.supportNote.classList.remove('hidden');
   return false;
@@ -144,26 +155,30 @@ async function requestPersistence() {
 }
 
 async function loadCPUModel() {
-  setProgress(0.01, navigator.onLine ? 'Preparing CPU AI… first download is about 271 MB.' : 'Loading the saved CPU AI from this phone…');
+  const alreadyDownloaded = localStorage.getItem('albw-runtime-ready') === 'cpu';
+  els.modelBtn.textContent = 'Loading CPU AI…';
+  setProgress(0.01, alreadyDownloaded ? 'Loading the downloaded CPU AI into memory…' : (navigator.onLine ? 'Preparing CPU AI… first download is about 271 MB.' : 'Loading the saved CPU AI from this phone…'));
   cpuModule ??= await import('./cpu-llm.js');
   await cpuModule.loadCPUModel(({ progress, loaded, total }) => {
     const mb = n => (n / 1024 / 1024).toFixed(0);
     const detail = total > 0 ? ` ${mb(loaded)} / ${mb(total)} MB` : '';
-    setProgress(progress || 0, `Downloading CPU AI…${detail}`);
+    setProgress(progress || 0, alreadyDownloaded ? `Loading CPU AI…${detail}` : `Downloading CPU AI…${detail}`);
   });
   runtimeKind = 'cpu';
   localStorage.setItem('albw-runtime-ready', 'cpu');
   setProgress(1, 'CPU AI ready offline: SmolLM2 360M Q4.');
   setPill(els.gpuPill, 'CPU AI ready offline');
+  els.modelBtn.textContent = 'CPU AI ready ✓';
   return 'cpu';
 }
 
 async function loadGPUModel(modelId, allowLightFallback=true) {
-  if (gpuEngine && gpuModel === modelId) { runtimeKind = 'gpu'; return 'gpu'; }
+  if (gpuEngine && gpuModel === modelId) { runtimeKind = 'gpu'; els.modelBtn.textContent = 'GPU AI ready ✓'; return 'gpu'; }
   if (!hasWebGPU) return loadCPUModel();
 
   els.modelBtn.disabled = true;
   els.modelSelect.disabled = true;
+  els.modelBtn.textContent = 'Loading GPU AI…';
   setProgress(0.02, navigator.onLine ? 'Downloading/preparing the GPU AI…' : 'Loading the saved GPU AI from this phone…');
 
   try {
@@ -177,6 +192,7 @@ async function loadGPUModel(modelId, allowLightFallback=true) {
     localStorage.setItem('albw-runtime-ready', 'gpu');
     setProgress(1, `GPU AI ready offline: ${modelId === MODEL_STANDARD ? 'Llama 3.2 1B' : 'SmolLM2 360M'}.`);
     setPill(els.gpuPill, 'GPU AI ready offline');
+    els.modelBtn.textContent = 'GPU AI ready ✓';
     return 'gpu';
   } catch (err) {
     console.error(err);
@@ -193,6 +209,7 @@ async function loadGPUModel(modelId, allowLightFallback=true) {
   } finally {
     els.modelBtn.disabled = false;
     els.modelSelect.disabled = !hasWebGPU;
+    updateModelButtonFromSavedState();
   }
 }
 
@@ -217,10 +234,15 @@ async function answerQuestion(question) {
     ? hits.map((h,i) => `[Guide topic ${i+1}: ${h.title}]\n${h.text.slice(0,700)}`).join('\n\n')
     : '[No close built-in guide topic matched this wording. Ask for more specific context rather than guessing.]';
   const sourceTitles = hits.map(h => h.title);
-  const bubble = addBubble('assistant', '…', sourceTitles);
+  const bubble = addBubble('assistant', 'Preparing answer…', sourceTitles);
 
   try {
+    if (!hasWebGPU && runtimeKind !== 'cpu') {
+      bubble.body.textContent = localStorage.getItem('albw-runtime-ready') === 'cpu' ? 'Loading CPU model…' : 'Preparing CPU model…';
+    }
     const kind = await ensureRuntime();
+    bubble.body.textContent = kind === 'cpu' ? 'Reading guide…' : 'Thinking…';
+
     const earlier = chatHistory.slice(0, -1).slice(kind === 'cpu' ? -4 : -6).map(m => ({ role: m.role, content: m.content }));
     const messages = [
       { role: 'system', content: systemPrompt() },
@@ -244,7 +266,7 @@ async function answerQuestion(question) {
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || '';
       full += delta;
-      bubble.body.textContent = full || '…';
+      if (full) bubble.body.textContent = full;
       window.scrollTo({ top: document.body.scrollHeight });
     }
     if (!full.trim()) full = directGuideAnswer(hits);
@@ -309,8 +331,14 @@ async function init() {
   const savedModel = localStorage.getItem('albw-model');
   if (savedModel === MODEL_STANDARD || savedModel === MODEL_LIGHT) els.modelSelect.value = savedModel;
   const ready = localStorage.getItem('albw-runtime-ready');
-  if (ready === 'cpu' && !hasWebGPU) setPill(els.gpuPill, 'CPU AI downloaded');
-  if (ready === 'gpu' && hasWebGPU) setPill(els.gpuPill, 'GPU AI downloaded');
+  if (ready === 'cpu' && !hasWebGPU) {
+    setPill(els.gpuPill, 'CPU AI downloaded');
+    els.modelBtn.textContent = 'CPU AI downloaded ✓';
+  }
+  if (ready === 'gpu' && hasWebGPU) {
+    setPill(els.gpuPill, 'GPU AI downloaded');
+    els.modelBtn.textContent = 'GPU AI downloaded ✓';
+  }
 
   renderHistory();
   setupInstallPrompt();
@@ -319,7 +347,10 @@ async function init() {
   els.modelBtn.addEventListener('click', async () => {
     els.modelBtn.disabled = true;
     try { await ensureRuntime(); }
-    catch (e) { setProgress(0, `Could not prepare local AI: ${e?.message || e}`); }
+    catch (e) {
+      setProgress(0, `Could not prepare local AI: ${e?.message || e}`);
+      updateModelButtonFromSavedState();
+    }
     finally { els.modelBtn.disabled = false; }
   });
   els.send.addEventListener('click', () => sendMessage());
