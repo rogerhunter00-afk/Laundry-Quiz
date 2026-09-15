@@ -3,9 +3,9 @@ import { KNOWLEDGE } from './knowledge.js';
 const WEBLLM_URL = 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm';
 const MODEL_STANDARD = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 const MODEL_LIGHT = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
-const CPU_MODEL_VERSION = 'gemma-3-270m-it-q4_k_m-v1';
-const CPU_MODEL_MB = 253;
-const CPU_MODEL_NAME = 'Gemma 3 270M';
+const CPU_MODEL_VERSION = 'gemma-3-1b-it-q4_k_m-v1';
+const CPU_MODEL_MB = 806;
+const CPU_MODEL_NAME = 'Gemma 3 1B';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -199,7 +199,7 @@ async function checkGPU() {
   setPill(els.gpuPill, cpuReady ? 'Gemma CPU AI downloaded' : 'Gemma CPU AI available', 'warn');
   els.modelSelect.disabled = true;
   els.modelBtn.textContent = cpuReady ? 'Gemma CPU AI downloaded ✓' : `Download Gemma CPU AI (~${CPU_MODEL_MB} MB)`;
-  els.supportNote.textContent = `WebGPU is unavailable on this phone, so the app will use ${CPU_MODEL_NAME} Instruct on the CPU through WebAssembly. It runs locally and works offline after the one-time ~${CPU_MODEL_MB} MB download.`;
+  els.supportNote.textContent = `WebGPU is unavailable on this phone, so the app will use ${CPU_MODEL_NAME} Instruct on the CPU through WebAssembly. It runs locally and works offline after the one-time ~${CPU_MODEL_MB} MB download. Expect slower answers than GPU mode.`;
   els.supportNote.classList.remove('hidden');
   return false;
 }
@@ -364,7 +364,7 @@ async function answerQuestion(question) {
       let stream;
       if (kind === 'cpu') {
         cpuModule ??= await import('./cpu-llm.js');
-        stream = await cpuModule.cpuChat(messages, { max_tokens: 140, temperature: 0, top_p: 0.85, stream: true });
+        stream = await cpuModule.cpuChat(messages, { max_tokens: 160, temperature: 0, top_p: 0.85, stream: true });
       } else {
         stream = await gpuEngine.chat.completions.create({
           messages,
@@ -377,7 +377,7 @@ async function answerQuestion(question) {
 
       const iterator = stream[Symbol.asyncIterator]();
       let full = '';
-      let result = kind === 'cpu' ? await nextWithFirstTokenTimeout(iterator, 120000) : await iterator.next();
+      let result = kind === 'cpu' ? await nextWithFirstTokenTimeout(iterator, 180000) : await iterator.next();
       while (!result.done) {
         full += result.value?.choices?.[0]?.delta?.content || '';
         result = await iterator.next();
