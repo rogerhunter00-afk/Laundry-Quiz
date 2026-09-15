@@ -1,7 +1,7 @@
 {
-  "name": "Zelda Guide AI",
-  "short_name": "Zelda AI",
-  "description": "Offline, on-device Zelda guide assistant.",
+  "name": "A Link Between Worlds Guide AI",
+  "short_name": "ALBW Guide",
+  "description": "Offline, on-device A Link Between Worlds game-guide assistant.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
