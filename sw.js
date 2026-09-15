@@ -1,6 +1,6 @@
-const SHELL_CACHE = 'albw-shell-v3';
-const CDN_CACHE = 'albw-cdn-v3';
-const SHELL = ['./','./index.html','./app.js','./knowledge.js','./guide.html','./guide.js','./manifest.webmanifest','./icon.svg'];
+const SHELL_CACHE = 'albw-shell-v4';
+const CDN_CACHE = 'albw-cdn-v4';
+const SHELL = ['./','./index.html','./app.js','./cpu-llm.js','./knowledge.js','./guide.html','./guide.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
