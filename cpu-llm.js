@@ -2,10 +2,11 @@ const WLLAMA_ESM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.
 const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm';
 
 const CPU_MODEL = {
-  repo: 'unsloth/SmolLM2-360M-Instruct-GGUF',
-  file: 'SmolLM2-360M-Instruct-Q4_K_M.gguf',
-  label: 'SmolLM2 360M Q4_K_M',
-  approxMB: 271,
+  repo: 'gguf-org/gemma-3-270m-it-gguf',
+  file: 'gemma-3-270m-it-q4_k_m.gguf',
+  label: 'Gemma 3 270M Instruct Q4_K_M',
+  approxMB: 253,
+  version: 'gemma-3-270m-it-q4_k_m-v1',
 };
 
 let instance = null;
@@ -74,7 +75,7 @@ export async function loadCPUModel(onProgress = () => {}) {
 }
 
 export async function cpuChat(messages, options = {}) {
-  if (!loaded) setAssistantStatus('Loading CPU model…');
+  if (!loaded) setAssistantStatus('Loading Gemma 3 CPU model…');
   const model = await loadCPUModel(options.onProgress || (() => {}));
 
   const startedAt = performance.now();
@@ -92,7 +93,7 @@ export async function cpuChat(messages, options = {}) {
       model.createChatCompletion({
         messages,
         max_tokens: options.max_tokens ?? 220,
-        temperature: options.temperature ?? 0.12,
+        temperature: options.temperature ?? 0.08,
         top_p: options.top_p ?? 0.9,
         stream: options.stream ?? true,
       }),
