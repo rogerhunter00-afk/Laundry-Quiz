@@ -1,13 +1,13 @@
+import { KNOWLEDGE } from './knowledge.js';
+
 const WEBLLM_URL = 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm';
-const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs';
-const PDF_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
 const MODEL_STANDARD = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 const MODEL_LIGHT = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
 
 const $ = (id) => document.getElementById(id);
 const els = {
   netPill: $('netPill'), gpuPill: $('gpuPill'), guidePill: $('guidePill'),
-  modelSelect: $('modelSelect'), modelBtn: $('modelBtn'), pdfInput: $('pdfInput'),
+  modelSelect: $('modelSelect'), modelBtn: $('modelBtn'),
   progressBar: $('progressBar'), progressText: $('progressText'), supportNote: $('supportNote'),
   chat: $('chat'), welcome: $('welcome'), input: $('messageInput'), send: $('sendBtn'),
   clear: $('clearBtn'), install: $('installBtn')
@@ -15,13 +15,11 @@ const els = {
 
 let engine = null;
 let engineModel = null;
-let guideChunks = [];
-let guideMeta = null;
 let deferredInstall = null;
 let isGenerating = false;
-let chatHistory = JSON.parse(localStorage.getItem('zelda-chat-v1') || '[]');
+let chatHistory = JSON.parse(localStorage.getItem('albw-chat-v2') || '[]');
 
-const STOP = new Set('the a an and or but if then to of in on at for from with without into onto by is are was were be been being it this that these those i me my we our you your he she they them his her their what where when how why which who do does did can could should would will just about after before through get got have has had as up down out over under there here not no yes'.split(' '));
+const STOP = new Set('the a an and or but if then to of in on at for from with without into onto by is are was were be been being it this that these those i me my we our you your he she they them his her their what where when how why which who do does did can could should would will just about after before through get got have has had as up down out over under there here not no yes next help stuck please'.split(' '));
 
 function setPill(el, text, kind='') {
   el.textContent = text;
@@ -35,103 +33,66 @@ function setProgress(value, text) {
 }
 
 function saveChat() {
-  localStorage.setItem('zelda-chat-v1', JSON.stringify(chatHistory.slice(-40)));
-}
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open('zelda-guide-ai', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('kv');
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbSet(key, value) {
-  const db = await openDB();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(value, key);
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
-}
-
-async function dbGet(key) {
-  const db = await openDB();
-  const value = await new Promise((resolve, reject) => {
-    const tx = db.transaction('kv', 'readonly');
-    const req = tx.objectStore('kv').get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return value;
+  localStorage.setItem('albw-chat-v2', JSON.stringify(chatHistory.slice(-50)));
 }
 
 function normalizeWords(text) {
   return (text.toLowerCase().match(/[a-z0-9']{2,}/g) || []).filter(w => !STOP.has(w));
 }
 
-function chunkPage(text, page) {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  if (!clean) return [];
-  const size = 1050, overlap = 180;
-  const out = [];
-  for (let i = 0; i < clean.length; i += size - overlap) {
-    const part = clean.slice(i, i + size).trim();
-    if (part.length > 60) out.push({ page, text: part, lower: part.toLowerCase() });
-    if (i + size >= clean.length) break;
-  }
-  return out;
-}
+function retrieve(question, limit=6) {
+  const recentUser = chatHistory.filter(m => m.role === 'user').slice(-2).map(m => m.content).join(' ');
+  const query = `${recentUser} ${question}`.trim();
+  const words = [...new Set(normalizeWords(query))];
+  const phrase = question.toLowerCase().replace(/[^a-z0-9' ]/g, ' ').replace(/\s+/g, ' ').trim();
 
-function retrieve(question, limit=5) {
-  if (!guideChunks.length) return [];
-  const words = [...new Set(normalizeWords(question))];
-  const phrase = question.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-  const scored = guideChunks.map((chunk) => {
+  return KNOWLEDGE.map((entry) => {
+    const title = entry.title.toLowerCase();
+    const tags = entry.tags.join(' ').toLowerCase();
+    const body = entry.text.toLowerCase();
     let score = 0;
+
     for (const w of words) {
-      let pos = chunk.lower.indexOf(w);
-      if (pos >= 0) {
+      if (title.includes(w)) score += w.length >= 6 ? 12 : 8;
+      if (tags.includes(w)) score += w.length >= 6 ? 9 : 6;
+      if (body.includes(w)) {
         score += w.length >= 7 ? 5 : w.length >= 5 ? 3 : 2;
-        const count = chunk.lower.split(w).length - 1;
-        score += Math.min(count, 3);
+        score += Math.min(body.split(w).length - 1, 3);
       }
     }
-    if (phrase.length > 5 && chunk.lower.includes(phrase)) score += 14;
-    for (let i = 0; i < words.length - 1; i++) {
-      if (chunk.lower.includes(`${words[i]} ${words[i+1]}`)) score += 5;
+
+    if (phrase.length > 5) {
+      if (title.includes(phrase)) score += 30;
+      if (tags.includes(phrase)) score += 20;
+      if (body.includes(phrase)) score += 14;
     }
-    return { ...chunk, score };
-  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score);
-  const result = [];
-  const seen = new Set();
-  for (const item of scored) {
-    const key = `${item.page}:${item.text.slice(0,80)}`;
-    if (!seen.has(key)) { result.push(item); seen.add(key); }
-    if (result.length >= limit) break;
-  }
-  return result;
+
+    for (let i = 0; i < words.length - 1; i++) {
+      const pair = `${words[i]} ${words[i+1]}`;
+      if (title.includes(pair)) score += 14;
+      if (tags.includes(pair)) score += 10;
+      if (body.includes(pair)) score += 6;
+    }
+
+    return { ...entry, score };
+  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit);
 }
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 }
 
-function addBubble(role, text, pages=[]) {
+function addBubble(role, text, sources=[]) {
   if (els.welcome) els.welcome.classList.add('hidden');
   const div = document.createElement('div');
   div.className = `bubble ${role === 'user' ? 'user' : 'ai'}`;
   const body = document.createElement('div');
   body.innerHTML = escapeHtml(text);
   div.appendChild(body);
-  if (pages.length) {
+  if (sources.length) {
     const src = document.createElement('div');
     src.className = 'sources';
-    src.textContent = `Guide pages: ${[...new Set(pages)].join(', ')}`;
+    src.textContent = `Guide topics: ${sources.slice(0,3).join(' · ')}`;
     div.appendChild(src);
   }
   els.chat.appendChild(div);
@@ -142,7 +103,7 @@ function addBubble(role, text, pages=[]) {
 function renderHistory() {
   if (!chatHistory.length) return;
   els.welcome.classList.add('hidden');
-  for (const m of chatHistory) addBubble(m.role, m.content, m.pages || []);
+  for (const m of chatHistory) addBubble(m.role, m.content, m.sources || []);
 }
 
 function updateConnection() {
@@ -152,13 +113,13 @@ function updateConnection() {
 async function checkGPU() {
   if (!('gpu' in navigator)) {
     setPill(els.gpuPill, 'WebGPU unavailable', 'bad');
-    els.supportNote.textContent = 'This browser cannot run the local AI. On Android, use a current version of Chrome. If Chrome is already current, this phone/GPU may not support WebGPU.';
+    els.supportNote.textContent = 'This browser cannot run the local AI. On Android, use an up-to-date Chrome browser. If Chrome is current, this phone/GPU may not expose WebGPU.';
     els.supportNote.classList.remove('hidden');
     return false;
   }
   try {
     const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error('No adapter');
+    if (!adapter) throw new Error('No WebGPU adapter');
     setPill(els.gpuPill, 'On-device AI supported');
     return true;
   } catch {
@@ -183,25 +144,27 @@ async function requestPersistence() {
 async function loadEngine(modelId, allowFallback=true) {
   if (engine && engineModel === modelId) return engine;
   if (!('gpu' in navigator)) throw new Error('WebGPU is not available in this browser.');
+
   els.modelBtn.disabled = true;
   els.modelSelect.disabled = true;
-  setProgress(0.02, navigator.onLine ? 'Loading local AI… first download can be large.' : 'Loading the saved AI model from this phone…');
+  setProgress(0.02, navigator.onLine ? 'Downloading/preparing the local AI…' : 'Loading the saved AI from this phone…');
+
   try {
     const webllm = await import(WEBLLM_URL);
     engine = await webllm.CreateMLCEngine(modelId, {
       initProgressCallback: (p) => setProgress(p.progress || 0, p.text || `Preparing AI… ${Math.round((p.progress || 0)*100)}%`)
     });
     engineModel = modelId;
-    localStorage.setItem('zelda-model', modelId);
-    localStorage.setItem('zelda-model-ready', '1');
-    setProgress(1, `AI ready on this phone: ${modelId === MODEL_STANDARD ? 'Llama 3.2 1B' : 'SmolLM2 360M'}.`);
+    localStorage.setItem('albw-model', modelId);
+    localStorage.setItem('albw-model-ready', '1');
+    setProgress(1, `AI ready offline: ${modelId === MODEL_STANDARD ? 'Llama 3.2 1B' : 'SmolLM2 360M'}. The game guide is built in.`);
     setPill(els.gpuPill, 'AI ready offline');
     return engine;
   } catch (err) {
     console.error(err);
     if (allowFallback && modelId === MODEL_STANDARD && navigator.onLine) {
       els.modelSelect.value = MODEL_LIGHT;
-      localStorage.setItem('zelda-model', MODEL_LIGHT);
+      localStorage.setItem('albw-model', MODEL_LIGHT);
       setProgress(0, 'The 1B model did not initialise. Trying the lighter Android model…');
       engine = null;
       return loadEngine(MODEL_LIGHT, false);
@@ -214,66 +177,36 @@ async function loadEngine(modelId, allowFallback=true) {
   }
 }
 
-async function importPDF(file) {
-  if (!file) return;
-  els.pdfInput.disabled = true;
-  setProgress(0.02, `Reading ${file.name} locally…`);
-  try {
-    const pdfjs = await import(PDFJS_URL);
-    pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-    const chunks = [];
-    let chars = 0;
-    for (let p = 1; p <= pdf.numPages; p++) {
-      const page = await pdf.getPage(p);
-      const tc = await page.getTextContent();
-      const text = tc.items.map(i => i.str || '').join(' ');
-      chars += text.length;
-      chunks.push(...chunkPage(text, p));
-      setProgress(p / pdf.numPages, `Indexing guide… page ${p} of ${pdf.numPages}`);
-    }
-    if (chars < 300 || chunks.length < 2) throw new Error('This PDF appears to contain scanned images rather than selectable text. This version needs a text-based PDF.');
-    guideChunks = chunks;
-    guideMeta = { name: file.name, pages: pdf.numPages, chunks: chunks.length, imported: Date.now() };
-    await dbSet('guideChunks', guideChunks);
-    await dbSet('guideMeta', guideMeta);
-    setPill(els.guidePill, `${pdf.numPages}-page guide saved`);
-    setProgress(1, `${file.name} is indexed and saved on this phone for offline use.`);
-  } catch (err) {
-    console.error(err);
-    setProgress(0, `Guide import failed: ${err?.message || err}`);
-  } finally {
-    els.pdfInput.disabled = false;
-  }
-}
-
 function systemPrompt() {
-  return `You are a concise Zelda game-guide assistant running locally on a phone. The user's imported guide is your primary source of truth. Use the supplied guide extracts to answer the exact question. Never invent a location, item, quest step, control, or puzzle solution that is not supported by the extracts. If the extracts do not contain enough information, say that you cannot find that part in the retrieved guide and suggest a more specific search phrase. Avoid spoilers beyond what the user asks. Give short, practical step-by-step directions when useful. Do not mention being an AI model.`;
+  return `You are an offline companion for The Legend of Zelda: A Link Between Worlds on Nintendo 3DS. Answer only about this game. The supplied built-in guide notes are your primary source of truth. Use them closely and do not invent exact chest positions, room directions, item requirements, boss mechanics or collectible locations that are not supported by the notes. If the notes are not precise enough, say what you do know and ask the player for the dungeon, room feature, item or objective they can see. Keep answers practical and concise. If the user asks for a hint, give the smallest useful hint and avoid spoilers. If they ask for full directions, give clear numbered steps. Never mention model training or pretend you searched the internet.`;
 }
 
 async function answerQuestion(question) {
-  if (!guideChunks.length) {
-    addBubble('ai', 'Load the Zelda guide PDF first so I can answer from it.');
-    return;
-  }
   const modelId = els.modelSelect.value;
   const localEngine = await loadEngine(modelId);
-  const hits = retrieve(question, 5);
+  const hits = retrieve(question, 6);
   const excerpts = hits.length
-    ? hits.map((h,i) => `[Guide extract ${i+1} — page ${h.page}]\n${h.text}`).join('\n\n')
-    : '[No relevant guide extract was found for this wording.]';
-  const earlier = chatHistory.slice(0, -1).slice(-6).map(m => ({ role: m.role === 'ai' ? 'assistant' : m.role, content: m.content }));
+    ? hits.map((h,i) => `[Built-in guide topic ${i+1}: ${h.title}]\n${h.text}`).join('\n\n')
+    : '[No close built-in guide topic matched this wording. Ask for more specific context rather than guessing.]';
+
+  const earlier = chatHistory.slice(0, -1).slice(-6).map(m => ({ role: m.role, content: m.content }));
   const messages = [
     { role: 'system', content: systemPrompt() },
     ...earlier,
-    { role: 'user', content: `Question: ${question}\n\nRelevant extracts from the imported guide:\n${excerpts}` }
+    { role: 'user', content: `Player question: ${question}\n\nRelevant built-in A Link Between Worlds guide notes:\n${excerpts}` }
   ];
-  const bubble = addBubble('ai', '…', hits.map(h => h.page));
+
+  const sourceTitles = hits.map(h => h.title);
+  const bubble = addBubble('assistant', '…', sourceTitles);
   let full = '';
+
   try {
     const stream = await localEngine.chat.completions.create({
-      messages, temperature: 0.15, top_p: 0.9, max_tokens: modelId === MODEL_LIGHT ? 220 : 320, stream: true
+      messages,
+      temperature: 0.12,
+      top_p: 0.9,
+      max_tokens: modelId === MODEL_LIGHT ? 240 : 360,
+      stream: true
     });
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || '';
@@ -281,18 +214,18 @@ async function answerQuestion(question) {
       bubble.body.textContent = full || '…';
       window.scrollTo({ top: document.body.scrollHeight });
     }
-    if (!full.trim()) full = 'I could not produce an answer from those guide passages. Try asking with the dungeon, shrine, quest, item, or location name.';
+    if (!full.trim()) full = 'I could not form a reliable answer from the built-in notes. Tell me the dungeon/location and what you can see on screen.';
     bubble.body.textContent = full;
-    chatHistory.push({ role: 'assistant', content: full, pages: hits.map(h => h.page) });
+    chatHistory.push({ role: 'assistant', content: full, sources: sourceTitles });
     saveChat();
   } catch (err) {
-    bubble.body.textContent = `I hit a local model error: ${err?.message || err}`;
+    bubble.body.textContent = `Local model error: ${err?.message || err}`;
     throw err;
   }
 }
 
-async function sendMessage() {
-  const question = els.input.value.trim();
+async function sendMessage(prefill=null) {
+  const question = (prefill ?? els.input.value).trim();
   if (!question || isGenerating) return;
   isGenerating = true;
   els.send.disabled = true;
@@ -310,49 +243,61 @@ function setupInstallPrompt() {
     e.preventDefault(); deferredInstall = e; els.install.style.display = 'block';
   });
   els.install.addEventListener('click', async () => {
-    if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; els.install.style.display = 'none'; return; }
-    els.supportNote.textContent = 'To keep this on the phone: open the browser menu and choose “Install app” or “Add to Home screen”.';
+    if (deferredInstall) {
+      deferredInstall.prompt();
+      await deferredInstall.userChoice;
+      deferredInstall = null;
+      els.install.style.display = 'none';
+      return;
+    }
+    els.supportNote.textContent = 'Open the browser menu and choose “Install app” or “Add to Home screen”.';
     els.supportNote.classList.remove('hidden');
   });
+
   const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   if (!standalone && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
     els.install.style.display = 'block';
     els.install.textContent = 'Add to Home';
     els.install.onclick = () => {
-      els.supportNote.textContent = 'On iPhone: tap Share in Safari, then “Add to Home Screen”. Open it once online and download the AI before using it offline.';
+      els.supportNote.textContent = 'On iPhone: tap Share in Safari, then “Add to Home Screen”. Download the AI once while online before relying on offline use.';
       els.supportNote.classList.remove('hidden');
     };
   }
 }
 
-async function restoreGuide() {
-  try {
-    guideChunks = (await dbGet('guideChunks')) || [];
-    guideMeta = (await dbGet('guideMeta')) || null;
-    if (guideChunks.length && guideMeta) setPill(els.guidePill, `${guideMeta.pages}-page guide saved`);
-  } catch (e) { console.warn(e); }
-}
-
 async function init() {
   updateConnection();
-  addEventListener('online', updateConnection); addEventListener('offline', updateConnection);
+  addEventListener('online', updateConnection);
+  addEventListener('offline', updateConnection);
   await ensureServiceWorker();
   requestPersistence();
   checkGPU();
-  await restoreGuide();
-  const savedModel = localStorage.getItem('zelda-model');
+  setPill(els.guidePill, `${KNOWLEDGE.length} built-in guide topics`);
+
+  const savedModel = localStorage.getItem('albw-model');
   if (savedModel === MODEL_STANDARD || savedModel === MODEL_LIGHT) els.modelSelect.value = savedModel;
-  if (localStorage.getItem('zelda-model-ready') === '1') setPill(els.gpuPill, 'AI downloaded');
+  if (localStorage.getItem('albw-model-ready') === '1') setPill(els.gpuPill, 'AI downloaded');
+
   renderHistory();
   setupInstallPrompt();
 
-  els.modelSelect.addEventListener('change', () => localStorage.setItem('zelda-model', els.modelSelect.value));
+  els.modelSelect.addEventListener('change', () => localStorage.setItem('albw-model', els.modelSelect.value));
   els.modelBtn.addEventListener('click', () => loadEngine(els.modelSelect.value).catch(() => {}));
-  els.pdfInput.addEventListener('change', (e) => importPDF(e.target.files?.[0]));
-  els.send.addEventListener('click', sendMessage);
-  els.input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
-  els.input.addEventListener('input', () => { els.input.style.height='auto'; els.input.style.height=Math.min(120, els.input.scrollHeight)+'px'; });
-  els.clear.addEventListener('click', () => { chatHistory=[]; saveChat(); [...els.chat.querySelectorAll('.bubble')].forEach(n=>n.remove()); els.welcome.classList.remove('hidden'); });
+  els.send.addEventListener('click', () => sendMessage());
+  els.input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  els.input.addEventListener('input', () => {
+    els.input.style.height='auto';
+    els.input.style.height=Math.min(120, els.input.scrollHeight)+'px';
+  });
+  els.clear.addEventListener('click', () => {
+    chatHistory=[];
+    saveChat();
+    [...els.chat.querySelectorAll('.bubble')].forEach(n=>n.remove());
+    els.welcome.classList.remove('hidden');
+  });
+  document.querySelectorAll('.chip').forEach(btn => btn.addEventListener('click', () => sendMessage(btn.dataset.q || btn.textContent)));
 }
 
 init();
