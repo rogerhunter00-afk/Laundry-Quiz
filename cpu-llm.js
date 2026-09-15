@@ -2,7 +2,7 @@ const WLLAMA_ESM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.
 const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm';
 
 const CPU_MODEL = {
-  repo: 'tensorblock/SmolLM2-360M-Instruct-GGUF',
+  repo: 'unsloth/SmolLM2-360M-Instruct-GGUF',
   file: 'SmolLM2-360M-Instruct-Q4_K_M.gguf',
   label: 'SmolLM2 360M Q4_K_M',
   approxMB: 271,
