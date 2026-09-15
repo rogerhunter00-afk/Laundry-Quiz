@@ -1,6 +1,6 @@
-const SHELL_CACHE = 'zelda-shell-v1';
-const CDN_CACHE = 'zelda-cdn-v1';
-const SHELL = ['./','./index.html','./app.js','./manifest.webmanifest','./icon.svg'];
+const SHELL_CACHE = 'albw-shell-v2';
+const CDN_CACHE = 'albw-cdn-v2';
+const SHELL = ['./','./index.html','./app.js','./knowledge.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
