@@ -55,6 +55,16 @@ export async function loadCPUModel(onProgress = () => {}) {
     );
   }
 
+  // If this device previously cached the old SmolLM2 fallback, remove it before
+  // downloading Gemma so we do not leave hundreds of MB of redundant model data.
+  if (localStorage.getItem('albw-cpu-model-version') !== CPU_MODEL.version) {
+    try {
+      await instance.cacheManager.clear();
+    } catch (error) {
+      console.warn('Could not clear stale CPU model cache:', error);
+    }
+  }
+
   await instance.loadModelFromHF(
     { repo: CPU_MODEL.repo, file: CPU_MODEL.file },
     {
