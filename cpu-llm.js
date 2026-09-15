@@ -2,11 +2,11 @@ const WLLAMA_ESM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.
 const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm';
 
 const CPU_MODEL = {
-  repo: 'gguf-org/gemma-3-270m-it-gguf',
-  file: 'gemma-3-270m-it-q4_k_m.gguf',
-  label: 'Gemma 3 270M Instruct Q4_K_M',
-  approxMB: 253,
-  version: 'gemma-3-270m-it-q4_k_m-v1',
+  repo: 'ggml-org/gemma-3-1b-it-GGUF',
+  file: 'gemma-3-1b-it-Q4_K_M.gguf',
+  label: 'Gemma 3 1B Instruct Q4_K_M',
+  approxMB: 806,
+  version: 'gemma-3-1b-it-q4_k_m-v1',
 };
 
 let instance = null;
@@ -55,8 +55,8 @@ export async function loadCPUModel(onProgress = () => {}) {
     );
   }
 
-  // If this device previously cached the old SmolLM2 fallback, remove it before
-  // downloading Gemma so we do not leave hundreds of MB of redundant model data.
+  // Remove an older cached CPU model before downloading this version so the
+  // phone does not retain multiple large GGUF files unnecessarily.
   if (localStorage.getItem('albw-cpu-model-version') !== CPU_MODEL.version) {
     try {
       await instance.cacheManager.clear();
@@ -85,17 +85,17 @@ export async function loadCPUModel(onProgress = () => {}) {
 }
 
 export async function cpuChat(messages, options = {}) {
-  if (!loaded) setAssistantStatus('Loading Gemma 3 CPU model…');
+  if (!loaded) setAssistantStatus('Loading Gemma 3 1B CPU model…');
   const model = await loadCPUModel(options.onProgress || (() => {}));
 
   const startedAt = performance.now();
   let firstTokenSeen = false;
-  setAssistantStatus('Thinking on CPU… 0s');
+  setAssistantStatus('Gemma 3 1B thinking on CPU… 0s');
 
   const timer = setInterval(() => {
     if (firstTokenSeen) return;
     const seconds = Math.max(1, Math.round((performance.now() - startedAt) / 1000));
-    setAssistantStatus(`Thinking on CPU… ${seconds}s`);
+    setAssistantStatus(`Gemma 3 1B thinking on CPU… ${seconds}s`);
   }, 1000);
 
   try {
@@ -103,11 +103,11 @@ export async function cpuChat(messages, options = {}) {
       model.createChatCompletion({
         messages,
         max_tokens: options.max_tokens ?? 220,
-        temperature: options.temperature ?? 0.08,
+        temperature: options.temperature ?? 0.05,
         top_p: options.top_p ?? 0.9,
         stream: options.stream ?? true,
       }),
-      timeoutAfter(120000, 'CPU AI did not start within 2 minutes.'),
+      timeoutAfter(180000, 'Gemma 3 1B did not start within 3 minutes.'),
     ]);
 
     if (!(rawStream && rawStream[Symbol.asyncIterator])) {
@@ -120,7 +120,7 @@ export async function cpuChat(messages, options = {}) {
       try {
         let result = await Promise.race([
           iterator.next(),
-          timeoutAfter(120000, 'CPU AI did not produce a first token within 2 minutes.'),
+          timeoutAfter(180000, 'Gemma 3 1B did not produce a first token within 3 minutes.'),
         ]);
 
         while (!result.done) {
