@@ -3,6 +3,9 @@ import { KNOWLEDGE } from './knowledge.js';
 const WEBLLM_URL = 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm';
 const MODEL_STANDARD = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 const MODEL_LIGHT = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
+const CPU_MODEL_VERSION = 'gemma-3-270m-it-q4_k_m-v1';
+const CPU_MODEL_MB = 253;
+const CPU_MODEL_NAME = 'Gemma 3 270M';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -28,6 +31,10 @@ const LEAK_PATTERNS = [
   'relevant built-in guide', '[guide topic', 'source:', 'instructions:',
   'system prompt', 'respond as you would', 'need_more_context\nsource'
 ];
+
+function cpuModelIsCurrent() {
+  return localStorage.getItem('albw-cpu-model-version') === CPU_MODEL_VERSION;
+}
 
 function setPill(el, text, kind='') {
   el.textContent = text;
@@ -161,8 +168,11 @@ function updateConnection() {
 
 function updateModelButtonFromSavedState() {
   const ready = localStorage.getItem('albw-runtime-ready');
-  if (!hasWebGPU && ready === 'cpu') {
-    els.modelBtn.textContent = runtimeKind === 'cpu' ? 'CPU AI ready ✓' : 'CPU AI downloaded ✓';
+  const cpuReady = ready === 'cpu' && cpuModelIsCurrent();
+  if (!hasWebGPU && cpuReady) {
+    els.modelBtn.textContent = runtimeKind === 'cpu' ? 'Gemma CPU AI ready ✓' : 'Gemma CPU AI downloaded ✓';
+  } else if (!hasWebGPU) {
+    els.modelBtn.textContent = `Download Gemma CPU AI (~${CPU_MODEL_MB} MB)`;
   } else if (hasWebGPU && ready === 'gpu') {
     els.modelBtn.textContent = runtimeKind === 'gpu' ? 'GPU AI ready ✓' : 'GPU AI downloaded ✓';
   }
@@ -178,6 +188,7 @@ async function checkGPU() {
   }
 
   const ready = localStorage.getItem('albw-runtime-ready');
+  const cpuReady = ready === 'cpu' && cpuModelIsCurrent();
   if (hasWebGPU) {
     setPill(els.gpuPill, ready === 'gpu' ? 'GPU AI downloaded' : 'GPU AI supported');
     els.modelSelect.disabled = false;
@@ -185,10 +196,10 @@ async function checkGPU() {
     return true;
   }
 
-  setPill(els.gpuPill, ready === 'cpu' ? 'CPU AI downloaded' : 'CPU AI available', 'warn');
+  setPill(els.gpuPill, cpuReady ? 'Gemma CPU AI downloaded' : 'Gemma CPU AI available', 'warn');
   els.modelSelect.disabled = true;
-  els.modelBtn.textContent = ready === 'cpu' ? 'CPU AI downloaded ✓' : 'Download CPU AI (~271 MB)';
-  els.supportNote.textContent = 'WebGPU is unavailable on this phone, so the app will use SmolLM2 360M on the CPU through WebAssembly instead. It will be slower, but it still runs locally and works offline after the first download.';
+  els.modelBtn.textContent = cpuReady ? 'Gemma CPU AI downloaded ✓' : `Download Gemma CPU AI (~${CPU_MODEL_MB} MB)`;
+  els.supportNote.textContent = `WebGPU is unavailable on this phone, so the app will use ${CPU_MODEL_NAME} Instruct on the CPU through WebAssembly. It runs locally and works offline after the one-time ~${CPU_MODEL_MB} MB download.`;
   els.supportNote.classList.remove('hidden');
   return false;
 }
@@ -207,20 +218,21 @@ async function requestPersistence() {
 }
 
 async function loadCPUModel() {
-  const alreadyDownloaded = localStorage.getItem('albw-runtime-ready') === 'cpu';
-  els.modelBtn.textContent = 'Loading CPU AI…';
-  setProgress(0.01, alreadyDownloaded ? 'Loading the downloaded CPU AI into memory…' : (navigator.onLine ? 'Preparing CPU AI… first download is about 271 MB.' : 'Loading the saved CPU AI from this phone…'));
+  const alreadyDownloaded = localStorage.getItem('albw-runtime-ready') === 'cpu' && cpuModelIsCurrent();
+  els.modelBtn.textContent = `Loading ${CPU_MODEL_NAME}…`;
+  setProgress(0.01, alreadyDownloaded ? `Loading the downloaded ${CPU_MODEL_NAME} into memory…` : (navigator.onLine ? `Preparing ${CPU_MODEL_NAME}… first download is about ${CPU_MODEL_MB} MB.` : `Loading the saved ${CPU_MODEL_NAME} from this phone…`));
   cpuModule ??= await import('./cpu-llm.js');
   await cpuModule.loadCPUModel(({ progress, loaded, total }) => {
     const mb = n => (n / 1024 / 1024).toFixed(0);
     const detail = total > 0 ? ` ${mb(loaded)} / ${mb(total)} MB` : '';
-    setProgress(progress || 0, alreadyDownloaded ? `Loading CPU AI…${detail}` : `Downloading CPU AI…${detail}`);
+    setProgress(progress || 0, alreadyDownloaded ? `Loading ${CPU_MODEL_NAME}…${detail}` : `Downloading ${CPU_MODEL_NAME}…${detail}`);
   });
   runtimeKind = 'cpu';
   localStorage.setItem('albw-runtime-ready', 'cpu');
-  setProgress(1, 'CPU AI ready offline: SmolLM2 360M Q4.');
-  setPill(els.gpuPill, 'CPU AI ready offline');
-  els.modelBtn.textContent = 'CPU AI ready ✓';
+  localStorage.setItem('albw-cpu-model-version', CPU_MODEL_VERSION);
+  setProgress(1, `CPU AI ready offline: ${CPU_MODEL_NAME} Q4_K_M.`);
+  setPill(els.gpuPill, 'Gemma CPU AI ready offline');
+  els.modelBtn.textContent = 'Gemma CPU AI ready ✓';
   return 'cpu';
 }
 
@@ -255,7 +267,7 @@ async function loadGPUModel(modelId, allowLightFallback=true) {
       setProgress(0, 'The 1B GPU model failed. Trying the lighter GPU model…');
       return loadGPUModel(MODEL_LIGHT, false);
     }
-    setProgress(0, 'GPU AI failed. Switching to the CPU model…');
+    setProgress(0, `GPU AI failed. Switching to ${CPU_MODEL_NAME} on CPU…`);
     hasWebGPU = false;
     return loadCPUModel();
   } finally {
@@ -330,13 +342,14 @@ async function answerQuestion(question) {
 
   try {
     if (!hasWebGPU && runtimeKind !== 'cpu') {
-      bubble.body.textContent = localStorage.getItem('albw-runtime-ready') === 'cpu' ? 'Loading CPU model…' : 'Preparing CPU model…';
+      const cpuReady = localStorage.getItem('albw-runtime-ready') === 'cpu' && cpuModelIsCurrent();
+      bubble.body.textContent = cpuReady ? `Loading ${CPU_MODEL_NAME}…` : `Preparing ${CPU_MODEL_NAME}…`;
     }
     const kind = await ensureRuntime();
     const started = Date.now();
     const statusTimer = setInterval(() => {
       const seconds = Math.floor((Date.now() - started) / 1000);
-      bubble.body.textContent = `${kind === 'cpu' ? 'Thinking on CPU' : 'Thinking'}… ${seconds}s`;
+      bubble.body.textContent = `${kind === 'cpu' ? `${CPU_MODEL_NAME} thinking on CPU` : 'Thinking'}… ${seconds}s`;
     }, 1000);
 
     try {
@@ -435,9 +448,9 @@ async function init() {
   const savedModel = localStorage.getItem('albw-model');
   if (savedModel === MODEL_STANDARD || savedModel === MODEL_LIGHT) els.modelSelect.value = savedModel;
   const ready = localStorage.getItem('albw-runtime-ready');
-  if (ready === 'cpu' && !hasWebGPU) {
-    setPill(els.gpuPill, 'CPU AI downloaded');
-    els.modelBtn.textContent = 'CPU AI downloaded ✓';
+  if (ready === 'cpu' && !hasWebGPU && cpuModelIsCurrent()) {
+    setPill(els.gpuPill, 'Gemma CPU AI downloaded');
+    els.modelBtn.textContent = 'Gemma CPU AI downloaded ✓';
   }
   if (ready === 'gpu' && hasWebGPU) {
     setPill(els.gpuPill, 'GPU AI downloaded');
