@@ -15,6 +15,23 @@ export function cpuModelInfo() {
   return { ...CPU_MODEL };
 }
 
+function latestAssistantBody() {
+  const bubbles = document.querySelectorAll('.bubble.ai');
+  const bubble = bubbles[bubbles.length - 1];
+  return bubble?.firstElementChild || null;
+}
+
+function setAssistantStatus(text) {
+  const body = latestAssistantBody();
+  if (body) body.textContent = text;
+}
+
+function timeoutAfter(ms, message) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(message)), ms);
+  });
+}
+
 export async function loadCPUModel(onProgress = () => {}) {
   if (loaded && instance) return instance;
 
@@ -57,12 +74,62 @@ export async function loadCPUModel(onProgress = () => {}) {
 }
 
 export async function cpuChat(messages, options = {}) {
+  if (!loaded) setAssistantStatus('Loading CPU model…');
   const model = await loadCPUModel(options.onProgress || (() => {}));
-  return model.createChatCompletion({
-    messages,
-    max_tokens: options.max_tokens ?? 220,
-    temperature: options.temperature ?? 0.12,
-    top_p: options.top_p ?? 0.9,
-    stream: options.stream ?? true,
-  });
+
+  const startedAt = performance.now();
+  let firstTokenSeen = false;
+  setAssistantStatus('Thinking on CPU… 0s');
+
+  const timer = setInterval(() => {
+    if (firstTokenSeen) return;
+    const seconds = Math.max(1, Math.round((performance.now() - startedAt) / 1000));
+    setAssistantStatus(`Thinking on CPU… ${seconds}s`);
+  }, 1000);
+
+  try {
+    const rawStream = await Promise.race([
+      model.createChatCompletion({
+        messages,
+        max_tokens: options.max_tokens ?? 220,
+        temperature: options.temperature ?? 0.12,
+        top_p: options.top_p ?? 0.9,
+        stream: options.stream ?? true,
+      }),
+      timeoutAfter(120000, 'CPU AI did not start within 2 minutes.'),
+    ]);
+
+    if (!(rawStream && rawStream[Symbol.asyncIterator])) {
+      throw new Error('CPU AI did not return a streaming response.');
+    }
+
+    const iterator = rawStream[Symbol.asyncIterator]();
+
+    async function* monitoredStream() {
+      try {
+        let result = await Promise.race([
+          iterator.next(),
+          timeoutAfter(120000, 'CPU AI did not produce a first token within 2 minutes.'),
+        ]);
+
+        while (!result.done) {
+          const delta = result.value?.choices?.[0]?.delta?.content || '';
+          if (!firstTokenSeen && delta) {
+            firstTokenSeen = true;
+            clearInterval(timer);
+            setAssistantStatus('Answering…');
+          }
+          yield result.value;
+          result = await iterator.next();
+        }
+      } finally {
+        clearInterval(timer);
+      }
+    }
+
+    return monitoredStream();
+  } catch (error) {
+    clearInterval(timer);
+    throw error;
+  }
 }
