@@ -13,10 +13,13 @@ const els = {
   clear: $('clearBtn'), install: $('installBtn')
 };
 
-let engine = null;
-let engineModel = null;
+let gpuEngine = null;
+let gpuModel = null;
+let cpuModule = null;
 let deferredInstall = null;
 let isGenerating = false;
+let hasWebGPU = false;
+let runtimeKind = null;
 let chatHistory = JSON.parse(localStorage.getItem('albw-chat-v2') || '[]');
 
 const STOP = new Set('the a an and or but if then to of in on at for from with without into onto by is are was were be been being it this that these those i me my we our you your he she they them his her their what where when how why which who do does did can could should would will just about after before through get got have has had as up down out over under there here not no yes next help stuck please'.split(' '));
@@ -40,7 +43,7 @@ function normalizeWords(text) {
   return (text.toLowerCase().match(/[a-z0-9']{2,}/g) || []).filter(w => !STOP.has(w));
 }
 
-function retrieve(question, limit=6) {
+function retrieve(question, limit=5) {
   const recentUser = chatHistory.filter(m => m.role === 'user').slice(-2).map(m => m.content).join(' ');
   const query = `${recentUser} ${question}`.trim();
   const words = [...new Set(normalizeWords(query))];
@@ -51,29 +54,22 @@ function retrieve(question, limit=6) {
     const tags = entry.tags.join(' ').toLowerCase();
     const body = entry.text.toLowerCase();
     let score = 0;
-
     for (const w of words) {
       if (title.includes(w)) score += w.length >= 6 ? 12 : 8;
       if (tags.includes(w)) score += w.length >= 6 ? 9 : 6;
-      if (body.includes(w)) {
-        score += w.length >= 7 ? 5 : w.length >= 5 ? 3 : 2;
-        score += Math.min(body.split(w).length - 1, 3);
-      }
+      if (body.includes(w)) score += w.length >= 7 ? 5 : w.length >= 5 ? 3 : 2;
     }
-
     if (phrase.length > 5) {
       if (title.includes(phrase)) score += 30;
       if (tags.includes(phrase)) score += 20;
       if (body.includes(phrase)) score += 14;
     }
-
     for (let i = 0; i < words.length - 1; i++) {
       const pair = `${words[i]} ${words[i+1]}`;
       if (title.includes(pair)) score += 14;
       if (tags.includes(pair)) score += 10;
       if (body.includes(pair)) score += 6;
     }
-
     return { ...entry, score };
   }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit);
 }
@@ -111,21 +107,27 @@ function updateConnection() {
 }
 
 async function checkGPU() {
-  if (!('gpu' in navigator)) {
-    setPill(els.gpuPill, 'WebGPU unavailable', 'bad');
-    els.supportNote.textContent = 'This browser cannot run the local AI. On Android, use an up-to-date Chrome browser. If Chrome is current, this phone/GPU may not expose WebGPU.';
-    els.supportNote.classList.remove('hidden');
-    return false;
+  hasWebGPU = false;
+  if ('gpu' in navigator) {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (adapter) hasWebGPU = true;
+    } catch {}
   }
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error('No WebGPU adapter');
-    setPill(els.gpuPill, 'On-device AI supported');
+
+  if (hasWebGPU) {
+    setPill(els.gpuPill, 'GPU AI supported');
+    els.modelSelect.disabled = false;
+    els.modelBtn.textContent = 'Download AI for offline use';
     return true;
-  } catch {
-    setPill(els.gpuPill, 'WebGPU unavailable', 'bad');
-    return false;
   }
+
+  setPill(els.gpuPill, 'CPU AI available', 'warn');
+  els.modelSelect.disabled = true;
+  els.modelBtn.textContent = 'Download CPU AI (~271 MB)';
+  els.supportNote.textContent = 'WebGPU is unavailable on this phone, so the app will use SmolLM2 360M on the CPU through WebAssembly instead. It will be slower, but it still runs locally and works offline after the first download.';
+  els.supportNote.classList.remove('hidden');
+  return false;
 }
 
 async function ensureServiceWorker() {
@@ -141,86 +143,121 @@ async function requestPersistence() {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
 }
 
-async function loadEngine(modelId, allowFallback=true) {
-  if (engine && engineModel === modelId) return engine;
-  if (!('gpu' in navigator)) throw new Error('WebGPU is not available in this browser.');
+async function loadCPUModel() {
+  setProgress(0.01, navigator.onLine ? 'Preparing CPU AI… first download is about 271 MB.' : 'Loading the saved CPU AI from this phone…');
+  cpuModule ??= await import('./cpu-llm.js');
+  await cpuModule.loadCPUModel(({ progress, loaded, total }) => {
+    const mb = n => (n / 1024 / 1024).toFixed(0);
+    const detail = total > 0 ? ` ${mb(loaded)} / ${mb(total)} MB` : '';
+    setProgress(progress || 0, `Downloading CPU AI…${detail}`);
+  });
+  runtimeKind = 'cpu';
+  localStorage.setItem('albw-runtime-ready', 'cpu');
+  setProgress(1, 'CPU AI ready offline: SmolLM2 360M Q4.');
+  setPill(els.gpuPill, 'CPU AI ready offline');
+  return 'cpu';
+}
+
+async function loadGPUModel(modelId, allowLightFallback=true) {
+  if (gpuEngine && gpuModel === modelId) { runtimeKind = 'gpu'; return 'gpu'; }
+  if (!hasWebGPU) return loadCPUModel();
 
   els.modelBtn.disabled = true;
   els.modelSelect.disabled = true;
-  setProgress(0.02, navigator.onLine ? 'Downloading/preparing the local AI…' : 'Loading the saved AI from this phone…');
+  setProgress(0.02, navigator.onLine ? 'Downloading/preparing the GPU AI…' : 'Loading the saved GPU AI from this phone…');
 
   try {
     const webllm = await import(WEBLLM_URL);
-    engine = await webllm.CreateMLCEngine(modelId, {
-      initProgressCallback: (p) => setProgress(p.progress || 0, p.text || `Preparing AI… ${Math.round((p.progress || 0)*100)}%`)
+    gpuEngine = await webllm.CreateMLCEngine(modelId, {
+      initProgressCallback: (p) => setProgress(p.progress || 0, p.text || `Preparing GPU AI… ${Math.round((p.progress || 0)*100)}%`)
     });
-    engineModel = modelId;
+    gpuModel = modelId;
+    runtimeKind = 'gpu';
     localStorage.setItem('albw-model', modelId);
-    localStorage.setItem('albw-model-ready', '1');
-    setProgress(1, `AI ready offline: ${modelId === MODEL_STANDARD ? 'Llama 3.2 1B' : 'SmolLM2 360M'}. The game guide is built in.`);
-    setPill(els.gpuPill, 'AI ready offline');
-    return engine;
+    localStorage.setItem('albw-runtime-ready', 'gpu');
+    setProgress(1, `GPU AI ready offline: ${modelId === MODEL_STANDARD ? 'Llama 3.2 1B' : 'SmolLM2 360M'}.`);
+    setPill(els.gpuPill, 'GPU AI ready offline');
+    return 'gpu';
   } catch (err) {
     console.error(err);
-    if (allowFallback && modelId === MODEL_STANDARD && navigator.onLine) {
+    gpuEngine = null;
+    if (allowLightFallback && modelId === MODEL_STANDARD && navigator.onLine) {
       els.modelSelect.value = MODEL_LIGHT;
       localStorage.setItem('albw-model', MODEL_LIGHT);
-      setProgress(0, 'The 1B model did not initialise. Trying the lighter Android model…');
-      engine = null;
-      return loadEngine(MODEL_LIGHT, false);
+      setProgress(0, 'The 1B GPU model failed. Trying the lighter GPU model…');
+      return loadGPUModel(MODEL_LIGHT, false);
     }
-    setProgress(0, `Could not load the AI: ${err?.message || err}`);
-    throw err;
+    setProgress(0, 'GPU AI failed. Switching to the CPU model…');
+    hasWebGPU = false;
+    return loadCPUModel();
   } finally {
     els.modelBtn.disabled = false;
-    els.modelSelect.disabled = false;
+    els.modelSelect.disabled = !hasWebGPU;
   }
 }
 
+async function ensureRuntime() {
+  if (runtimeKind === 'gpu' && gpuEngine) return 'gpu';
+  if (runtimeKind === 'cpu') return 'cpu';
+  return hasWebGPU ? loadGPUModel(els.modelSelect.value) : loadCPUModel();
+}
+
 function systemPrompt() {
-  return `You are an offline companion for The Legend of Zelda: A Link Between Worlds on Nintendo 3DS. Answer only about this game. The supplied built-in guide notes are your primary source of truth. Use them closely and do not invent exact chest positions, room directions, item requirements, boss mechanics or collectible locations that are not supported by the notes. If the notes are not precise enough, say what you do know and ask the player for the dungeon, room feature, item or objective they can see. Keep answers practical and concise. If the user asks for a hint, give the smallest useful hint and avoid spoilers. If they ask for full directions, give clear numbered steps. Never mention model training or pretend you searched the internet.`;
+  return `You are an offline companion for The Legend of Zelda: A Link Between Worlds on Nintendo 3DS. Answer only about this game. The supplied built-in guide notes are your primary source of truth. Use them closely and do not invent exact chest positions, room directions, item requirements, boss mechanics or collectible locations that are not supported by the notes. If the notes are not precise enough, say what you do know and ask the player for the dungeon, room feature, item or objective they can see. Keep answers practical and concise. If the user asks for a hint, give the smallest useful hint and avoid spoilers. If they ask for full directions, give clear numbered steps.`;
+}
+
+function directGuideAnswer(hits) {
+  if (!hits.length) return 'I could not match that to the built-in guide. Try including the dungeon, boss, item, location or objective name.';
+  return hits.slice(0,2).map(h => `${h.title}\n${h.text}`).join('\n\n');
 }
 
 async function answerQuestion(question) {
-  const modelId = els.modelSelect.value;
-  const localEngine = await loadEngine(modelId);
-  const hits = retrieve(question, 6);
+  const hits = retrieve(question, hasWebGPU ? 6 : 4);
   const excerpts = hits.length
-    ? hits.map((h,i) => `[Built-in guide topic ${i+1}: ${h.title}]\n${h.text}`).join('\n\n')
+    ? hits.map((h,i) => `[Guide topic ${i+1}: ${h.title}]\n${h.text.slice(0,700)}`).join('\n\n')
     : '[No close built-in guide topic matched this wording. Ask for more specific context rather than guessing.]';
-
-  const earlier = chatHistory.slice(0, -1).slice(-6).map(m => ({ role: m.role, content: m.content }));
-  const messages = [
-    { role: 'system', content: systemPrompt() },
-    ...earlier,
-    { role: 'user', content: `Player question: ${question}\n\nRelevant built-in A Link Between Worlds guide notes:\n${excerpts}` }
-  ];
-
   const sourceTitles = hits.map(h => h.title);
   const bubble = addBubble('assistant', '…', sourceTitles);
-  let full = '';
 
   try {
-    const stream = await localEngine.chat.completions.create({
-      messages,
-      temperature: 0.12,
-      top_p: 0.9,
-      max_tokens: modelId === MODEL_LIGHT ? 240 : 360,
-      stream: true
-    });
+    const kind = await ensureRuntime();
+    const earlier = chatHistory.slice(0, -1).slice(kind === 'cpu' ? -4 : -6).map(m => ({ role: m.role, content: m.content }));
+    const messages = [
+      { role: 'system', content: systemPrompt() },
+      ...earlier,
+      { role: 'user', content: `Player question: ${question}\n\nRelevant built-in guide notes:\n${excerpts}` }
+    ];
+
+    let full = '';
+    let stream;
+    if (kind === 'cpu') {
+      cpuModule ??= await import('./cpu-llm.js');
+      stream = await cpuModule.cpuChat(messages, { max_tokens: 180, temperature: 0.1, top_p: 0.9, stream: true });
+    } else {
+      stream = await gpuEngine.chat.completions.create({
+        messages, temperature: 0.12, top_p: 0.9,
+        max_tokens: gpuModel === MODEL_LIGHT ? 240 : 360,
+        stream: true
+      });
+    }
+
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || '';
       full += delta;
       bubble.body.textContent = full || '…';
       window.scrollTo({ top: document.body.scrollHeight });
     }
-    if (!full.trim()) full = 'I could not form a reliable answer from the built-in notes. Tell me the dungeon/location and what you can see on screen.';
+    if (!full.trim()) full = directGuideAnswer(hits);
     bubble.body.textContent = full;
     chatHistory.push({ role: 'assistant', content: full, sources: sourceTitles });
     saveChat();
   } catch (err) {
-    bubble.body.textContent = `Local model error: ${err?.message || err}`;
-    throw err;
+    console.error(err);
+    const fallback = directGuideAnswer(hits);
+    bubble.body.textContent = `${fallback}\n\n(Offline AI could not start on this device, so this answer is shown directly from the built-in guide.)`;
+    chatHistory.push({ role: 'assistant', content: bubble.body.textContent, sources: sourceTitles });
+    saveChat();
+    setPill(els.gpuPill, 'Guide-only fallback', 'warn');
   }
 }
 
@@ -234,7 +271,6 @@ async function sendMessage(prefill=null) {
   chatHistory.push({ role: 'user', content: question });
   saveChat();
   try { await answerQuestion(question); }
-  catch (e) { console.error(e); }
   finally { isGenerating = false; els.send.disabled = false; els.input.focus(); }
 }
 
@@ -244,16 +280,12 @@ function setupInstallPrompt() {
   });
   els.install.addEventListener('click', async () => {
     if (deferredInstall) {
-      deferredInstall.prompt();
-      await deferredInstall.userChoice;
-      deferredInstall = null;
-      els.install.style.display = 'none';
-      return;
+      deferredInstall.prompt(); await deferredInstall.userChoice;
+      deferredInstall = null; els.install.style.display = 'none'; return;
     }
     els.supportNote.textContent = 'Open the browser menu and choose “Install app” or “Add to Home screen”.';
     els.supportNote.classList.remove('hidden');
   });
-
   const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   if (!standalone && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
     els.install.style.display = 'block';
@@ -271,18 +303,25 @@ async function init() {
   addEventListener('offline', updateConnection);
   await ensureServiceWorker();
   requestPersistence();
-  checkGPU();
+  await checkGPU();
   setPill(els.guidePill, `${KNOWLEDGE.length} built-in guide topics`);
 
   const savedModel = localStorage.getItem('albw-model');
   if (savedModel === MODEL_STANDARD || savedModel === MODEL_LIGHT) els.modelSelect.value = savedModel;
-  if (localStorage.getItem('albw-model-ready') === '1') setPill(els.gpuPill, 'AI downloaded');
+  const ready = localStorage.getItem('albw-runtime-ready');
+  if (ready === 'cpu' && !hasWebGPU) setPill(els.gpuPill, 'CPU AI downloaded');
+  if (ready === 'gpu' && hasWebGPU) setPill(els.gpuPill, 'GPU AI downloaded');
 
   renderHistory();
   setupInstallPrompt();
 
   els.modelSelect.addEventListener('change', () => localStorage.setItem('albw-model', els.modelSelect.value));
-  els.modelBtn.addEventListener('click', () => loadEngine(els.modelSelect.value).catch(() => {}));
+  els.modelBtn.addEventListener('click', async () => {
+    els.modelBtn.disabled = true;
+    try { await ensureRuntime(); }
+    catch (e) { setProgress(0, `Could not prepare local AI: ${e?.message || e}`); }
+    finally { els.modelBtn.disabled = false; }
+  });
   els.send.addEventListener('click', () => sendMessage());
   els.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -292,8 +331,7 @@ async function init() {
     els.input.style.height=Math.min(120, els.input.scrollHeight)+'px';
   });
   els.clear.addEventListener('click', () => {
-    chatHistory=[];
-    saveChat();
+    chatHistory=[]; saveChat();
     [...els.chat.querySelectorAll('.bubble')].forEach(n=>n.remove());
     els.welcome.classList.remove('hidden');
   });
